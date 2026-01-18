@@ -6,6 +6,7 @@ __pycache__/
 venv/
 ENV/
 env/
+.idea/
 
 # Configuration and Backups
 backups/

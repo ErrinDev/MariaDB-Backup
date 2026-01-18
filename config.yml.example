@@ -30,5 +30,6 @@ servers:
     password: "backup_password"
     databases:
       - "app_db"
+      - "all" # Use "all" to backup all databases on the server
     interval_hours: 6 # Every 6 hours
     timeout: 600 # Default 10-minute timeout for all DBs on this server

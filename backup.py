@@ -40,7 +40,7 @@ def send_discord_notification(config, message):
 
 def get_retention_policy(config, db_name):
     retention = config.get("retention", {})
-    overrides = retention.get("overrides", {})
+    overrides = retention.get("overrides", {}) or {}
     if db_name in overrides:
         return overrides[db_name]
     return retention.get("default", {"keep_last": 10, "max_gb": 5.0})
@@ -94,6 +94,35 @@ def apply_retention(config, host, db_name):
         oldest.unlink()
         print(f"{YELLOW}Deleted old backup (size limit): {oldest}{RESET}")
 
+def get_databases(server):
+    host = server["host"]
+    user = server["user"]
+    password = server["password"]
+    port = server.get("port", 3306)
+    container = server.get("container")
+
+    try:
+        env = os.environ.copy()
+        env["MYSQL_PWD"] = password
+        
+        if container:
+            cmd = ["docker", "exec", "-e", f"MYSQL_PWD={password}", container, "mariadb", "-u", user, "-N", "-e", "SHOW DATABASES;"]
+        else:
+            cmd = ["mariadb", "-h", host, "-P", str(port), "-u", user, "-N", "-e", "SHOW DATABASES;"]
+        
+        p = subprocess.run(cmd, env=env if not container else None, capture_output=True, text=True)
+        if p.returncode != 0:
+            print(f"{RED}Error fetching databases for {host}: {p.stderr.strip()}{RESET}")
+            return []
+        
+        dbs = p.stdout.strip().split('\n')
+        # Filter out system databases
+        exclude = ["information_schema", "performance_schema", "mysql", "sys"]
+        return [db for db in dbs if db not in exclude]
+    except Exception as e:
+        print(f"{RED}Error fetching databases for {host}: {e}{RESET}")
+        return []
+
 def run_backup(config, host, user, password, db_name, port=3306, container=None, timeout=3600):
     storage_path = Path(config.get("storage", {}).get("path", "./backups"))
     db_backup_dir = storage_path / host
@@ -126,12 +155,14 @@ def run_backup(config, host, user, password, db_name, port=3306, container=None,
         env["MYSQL_PWD"] = password
         
         # Using pipe to gzip to save space immediately
+        dump_args = [db_name]
+
         if container:
             # When using docker exec, we pass MYSQL_PWD to the environment inside the container
             # We don't use -it because it's not an interactive shell
-            dump_cmd = ["docker", "exec", "-e", f"MYSQL_PWD={password}", container, "mariadb-dump", "-h", host, "-P", str(port), "-u", user, db_name]
+            dump_cmd = ["docker", "exec", "-e", f"MYSQL_PWD={password}", container, "mariadb-dump", "-h", host, "-P", str(port), "-u", user] + dump_args
         else:
-            dump_cmd = ["mariadb-dump", "-h", host, "-P", str(port), "-u", user, db_name]
+            dump_cmd = ["mariadb-dump", "-h", host, "-P", str(port), "-u", user] + dump_args
         
         gzip_cmd = ["gzip"]
         
@@ -190,7 +221,7 @@ def list_backups(config):
                 # Format for restore command: host/backup_name (without extension)
                 print(f"{host_dir.name:<30} {backup_file.name:<50} {size_mb:>8.2f} MB {mtime:<20}")
 
-def restore_backup(config, backup_ref):
+def restore_backup(config, backup_ref, clean_restore=False):
     # backup_ref format: db_server_one_FQDN/database-DD-MM-YYYY-N
     try:
         host, backup_name = backup_ref.split("/")
@@ -224,7 +255,35 @@ def restore_backup(config, backup_ref):
     try:
         env = os.environ.copy()
         env["MYSQL_PWD"] = server_cfg['password']
-        
+
+        if clean_restore:
+            print(f"{YELLOW}Clean restore requested. Dropping all tables in {db_name}...{RESET}")
+            # Get list of tables and drop them one by one or via a script
+            if server_cfg.get("container"):
+                get_tables_cmd = ["docker", "exec", "-e", f"MYSQL_PWD={server_cfg['password']}", server_cfg["container"], "mariadb", "-u", server_cfg["user"], "-N", "-e", f"SHOW TABLES FROM `{db_name}`;"]
+            else:
+                get_tables_cmd = ["mariadb", "-h", host, "-P", str(server_cfg.get("port", 3306)), "-u", server_cfg["user"], "-N", "-e", f"SHOW TABLES FROM `{db_name}`;"]
+            
+            p_tables = subprocess.run(get_tables_cmd, env=env if not server_cfg.get("container") else None, capture_output=True, text=True)
+            if p_tables.returncode == 0:
+                tables = p_tables.stdout.strip().split('\n')
+                if tables and tables[0]:
+                    drop_sql = "SET FOREIGN_KEY_CHECKS = 0; "
+                    for table in tables:
+                        drop_sql += f"DROP TABLE IF EXISTS `{db_name}`.`{table}`; "
+                    drop_sql += "SET FOREIGN_KEY_CHECKS = 1;"
+                    
+                    if server_cfg.get("container"):
+                        drop_cmd = ["docker", "exec", "-e", f"MYSQL_PWD={server_cfg['password']}", server_cfg["container"], "mariadb", "-u", server_cfg["user"], "-e", drop_sql]
+                    else:
+                        drop_cmd = ["mariadb", "-h", host, "-P", str(server_cfg.get("port", 3306)), "-u", server_cfg["user"], "-e", drop_sql]
+                    
+                    p_drop = subprocess.run(drop_cmd, env=env if not server_cfg.get("container") else None, capture_output=True)
+                    if p_drop.returncode != 0:
+                        print(f"{RED}Warning: Failed to drop tables: {p_drop.stderr.decode().strip()}{RESET}")
+            else:
+                 print(f"{RED}Warning: Failed to get tables list: {p_tables.stderr.strip()}{RESET}")
+
         # zcat backup.sql.gz | mariadb -h host -P port -u user db_name
         zcat_cmd = ["zcat", str(backup_file_path)]
         
@@ -243,18 +302,43 @@ def restore_backup(config, backup_ref):
             raise Exception(stderr.decode().strip())
 
         print(f"{GREEN}Restore completed successfully.{RESET}")
+        
+        success_msg = config.get("discord", {}).get("on_restore_success", "Restore of {database} on {host} completed successfully.")
+        send_discord_notification(config, success_msg.format(database=db_name, host=host))
     except Exception as e:
-        print(f"{RED}Restore failed: {e}{RESET}")
+        error_str = str(e)
+        print(f"{RED}Restore failed: {error_str}{RESET}")
+        failure_msg = config.get("discord", {}).get("on_restore_failure", "Restore of {database} on {host} failed: {error}")
+        send_discord_notification(config, failure_msg.format(database=db_name, host=host, error=error_str))
 
 def run_all_now(config):
     for server in config.get("servers", []):
-        for db_entry in server.get("databases", []):
+        databases = server.get("databases", [])
+        if not databases:
+            databases = ["all"]
+
+        for db_entry in databases:
             db_name = db_entry
             db_timeout = server.get("timeout", 3600)
             
             if isinstance(db_entry, dict):
                 db_name = db_entry.get("name")
                 db_timeout = db_entry.get("timeout", db_timeout)
+            
+            if db_name == "all":
+                server_dbs = get_databases(server)
+                for sdb in server_dbs:
+                    run_backup(
+                        config, 
+                        server["host"], 
+                        server["user"], 
+                        server["password"], 
+                        sdb, 
+                        port=server.get("port", 3306),
+                        container=server.get("container"),
+                        timeout=db_timeout
+                    )
+                continue
 
             run_backup(
                 config, 
@@ -275,6 +359,7 @@ def main():
     
     restore_parser = subparsers.add_parser("restore", help="Restore a backup")
     restore_parser.add_argument("backup_ref", help="Backup reference in host/filename format")
+    restore_parser.add_argument("--clean", action="store_true", help="Drop all tables in the database before restore to ensure it matches the backup exactly")
 
     subparsers.add_parser("now", help="Run all backups immediately")
     
@@ -289,7 +374,7 @@ def main():
     if args.command == "list":
         list_backups(config)
     elif args.command == "restore":
-        restore_backup(config, args.backup_ref)
+        restore_backup(config, args.backup_ref, clean_restore=args.clean)
     elif args.command == "now":
         run_all_now(config)
     elif args.command == "daemon":
@@ -301,13 +386,33 @@ def main():
             now = datetime.datetime.now()
             for server in config.get("servers", []):
                 host = server["host"]
-                for db_entry in server.get("databases", []):
+                databases = server.get("databases", [])
+                if not databases:
+                    databases = ["all"]
+
+                for db_entry in databases:
                     db_name = db_entry
                     db_timeout = server.get("timeout", 3600)
                     
                     if isinstance(db_entry, dict):
                         db_name = db_entry.get("name")
                         db_timeout = db_entry.get("timeout", db_timeout)
+
+                    if db_name == "all":
+                        server_dbs = get_databases(server)
+                        for sdb in server_dbs:
+                            run_backup(
+                                config, 
+                                host, 
+                                server["user"], 
+                                server["password"], 
+                                sdb, 
+                                port=server.get("port", 3306),
+                                container=server.get("container"),
+                                timeout=db_timeout
+                            )
+                        last_run[key] = now
+                        continue
 
                     should_run = False
                     key = (host, db_name)
