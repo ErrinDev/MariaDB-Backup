@@ -1,0 +1,14 @@
+[Unit]
+Description=MariaDB Backup Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=erinp
+WorkingDirectory=/home/erinp/PycharmProjects/Database Backup
+ExecStart=/usr/bin/python3 backup.py daemon
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

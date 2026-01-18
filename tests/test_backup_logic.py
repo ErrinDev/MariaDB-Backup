@@ -60,9 +60,10 @@ class TestBackupLogic(unittest.TestCase):
         db_dir = self.test_dir / host
         db_dir.mkdir(parents=True)
 
-        # Create 5 dummy backup files
+        # Create 5 dummy backup files with proper naming for the new glob pattern
+        # Pattern: db_name-DD-MM-YYYY-N.sql.gz
         for i in range(5):
-            f = db_dir / f"{db}-2023-01-0{i}.sql.gz"
+            f = db_dir / f"{db}-18-01-2026-{i}.sql.gz"
             f.write_text("dummy content")
             # Ensure different mtimes
             os.utime(f, (time.time() + i, time.time() + i))
