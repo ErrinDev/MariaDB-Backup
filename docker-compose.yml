@@ -1,0 +1,26 @@
+services:
+  db1:
+    image: mariadb:latest
+    container_name: db_server_one
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: website_db
+      MYSQL_USER: backup_user
+      MYSQL_PASSWORD: backup_password
+    ports:
+      - "3306:3306"
+
+  db2:
+    image: mariadb:latest
+    container_name: db_server_two
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: app_db
+      MYSQL_USER: backup_user
+      MYSQL_PASSWORD: backup_password
+    ports:
+      - "3307:3306"
+
+networks:
+  default:
+    name: backup_test_network

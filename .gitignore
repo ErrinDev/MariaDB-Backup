@@ -1,0 +1,21 @@
+# Python dependencies
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+
+# Configuration and Backups
+backups/
+test_backups/
+test_config.yml
+config.yml
+
+# IDE files
+.idea/
+.vscode/
+
+# System files
+.DS_Store
