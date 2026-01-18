@@ -401,17 +401,36 @@ def main():
                     if db_name == "all":
                         server_dbs = get_databases(server)
                         for sdb in server_dbs:
-                            run_backup(
-                                config, 
-                                host, 
-                                server["user"], 
-                                server["password"], 
-                                sdb, 
-                                port=server.get("port", 3306),
-                                container=server.get("container"),
-                                timeout=db_timeout
-                            )
-                        last_run[key] = now
+                            key = (host, sdb)
+                            
+                            # Check scheduling for each database
+                            should_run = False
+                            if "schedule" in server:
+                                try:
+                                    sched_time = datetime.datetime.strptime(server["schedule"], "%H:%M").time()
+                                    today_run_time = datetime.datetime.combine(now.date(), sched_time)
+                                    if now >= today_run_time:
+                                        if key not in last_run or last_run[key] < today_run_time:
+                                            should_run = True
+                                except ValueError:
+                                    print(f"{RED}Invalid schedule format for {host}/{sdb}: {server['schedule']}{RESET}")
+                            elif "interval_hours" in server:
+                                interval = datetime.timedelta(hours=server["interval_hours"])
+                                if key not in last_run or (now - last_run[key]) >= interval:
+                                    should_run = True
+                            
+                            if should_run:
+                                run_backup(
+                                    config, 
+                                    host, 
+                                    server["user"], 
+                                    server["password"], 
+                                    sdb, 
+                                    port=server.get("port", 3306),
+                                    container=server.get("container"),
+                                    timeout=db_timeout
+                                )
+                                last_run[key] = now
                         continue
 
                     should_run = False
