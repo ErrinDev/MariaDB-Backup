@@ -31,5 +31,7 @@ servers:
     databases:
       - "app_db"
       - "all" # Use "all" to backup all databases on the server
+    exclude:
+      - "temp_dev_db" # Exclude this DB when using "all"
     interval_hours: 6 # Every 6 hours
     timeout: 600 # Default 10-minute timeout for all DBs on this server

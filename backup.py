@@ -118,6 +118,12 @@ def get_databases(server):
         dbs = p.stdout.strip().split('\n')
         # Filter out system databases
         exclude = ["information_schema", "performance_schema", "mysql", "sys"]
+        
+        # Add custom exclusions from server config
+        custom_exclude = server.get("exclude", [])
+        if isinstance(custom_exclude, list):
+            exclude.extend(custom_exclude)
+            
         return [db for db in dbs if db not in exclude]
     except Exception as e:
         print(f"{RED}Error fetching databases for {host}: {e}{RESET}")
