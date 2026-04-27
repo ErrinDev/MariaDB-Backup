@@ -165,4 +165,4 @@ Run the unit tests using the provided script:
 
 ## License
 
-MIT
+Apache 2.0 (/LICENSE)
